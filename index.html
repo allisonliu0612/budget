@@ -678,7 +678,20 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
           <button class="btn btn-ink btn-full" onclick="addRecurring()">新增固定收支</button>
         </div>
         <div id="recurring-list"></div>
-        <button class="btn btn-ghost btn-full mt12" id="apply-btn" onclick="applyRecurring()">套用今日到期項目</button>
+        <!-- 手動套用區塊 -->
+        <div class="card" style="margin-top:12px;">
+          <div class="card-title">套用固定收支到記帳</div>
+          <div style="font-size:13px;color:var(--ink3);margin-bottom:12px;line-height:1.6;">
+            選擇日期後，勾選要套入的項目，按「套用」即可加入記帳。可補登過去任何一天。
+          </div>
+          <div class="input-block" style="margin-bottom:12px;">
+            <label>套用日期</label>
+            <input type="date" id="apply-date">
+          </div>
+          <div id="apply-checklist" style="margin-bottom:12px;"></div>
+          <button class="btn btn-ink btn-full" onclick="applySelected()" id="apply-selected-btn">套用勾選項目</button>
+          <div id="apply-result" style="margin-top:10px;font-size:13px;color:var(--ink3);line-height:1.6;min-height:16px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -1350,15 +1363,17 @@ function addRecurring(){
   saveAll();renderRecurring();
   document.getElementById('r-name').value='';document.getElementById('r-amount').value='';
 }
+
 function deleteRecurring(id){
   if(!recurring[curBookId]) return;
   recurring[curBookId]=recurring[curBookId].filter(r=>r.id!==id);
   saveAll();renderRecurring();
 }
+
 function renderRecurring(){
   const list=document.getElementById('recurring-list');
   const recs=recurring[curBookId]||[];
-  if(!recs.length){list.innerHTML='<div class="empty" style="padding:1rem 0;">尚無固定收支</div>';return;}
+  if(!recs.length){list.innerHTML='<div class="empty" style="padding:1rem 0;">尚無固定收支<br>新增後即可套用到記帳</div>';renderApplyChecklist();return;}
   list.innerHTML=recs.map(r=>{
     const ci=r.type==='saving'?SAVE_CAT:getCatInfo(r.category,r.type);
     const pi=PAY_MAP[r.pay]||PAYS[0];
@@ -1366,16 +1381,109 @@ function renderRecurring(){
     const sign=r.type==='income'?'+':'-';
     return `<div class="rec-item" style="margin-bottom:6px;">
       <div class="rec-ico" style="background:${ci.c}18;">${ci.e}</div>
-      <div class="rec-body"><div class="rec-name">${r.name}</div><div class="rec-meta">每月 ${r.day}號 · ${pi.e} ${pi.l}</div></div>
-      <div class="rec-right"><div class="rec-amt ${cls}">${sign}${fmt(r.amount)}</div><button class="rec-del" onclick="deleteRecurring(${r.id})">×</button></div>
+      <div class="rec-body">
+        <div class="rec-name">${r.name}</div>
+        <div class="rec-meta">每月 ${r.day}號 · ${pi.e} ${pi.l}</div>
+      </div>
+      <div class="rec-right">
+        <div class="rec-amt ${cls}">${sign}${fmt(r.amount)}</div>
+        <button class="rec-del" onclick="deleteRecurring(${r.id})">×</button>
+      </div>
+    </div>`;
+  }).join('');
+  renderApplyChecklist();
+}
+
+function renderApplyChecklist(){
+  // 預設日期為今天
+  const dateEl = document.getElementById('apply-date');
+  if(dateEl && !dateEl.value) dateEl.value = today();
+
+  const recs = recurring[curBookId]||[];
+  const cl = document.getElementById('apply-checklist');
+  if(!cl) return;
+  if(!recs.length){ cl.innerHTML=''; return; }
+
+  cl.innerHTML = recs.map(r=>{
+    const ci = r.type==='saving'?SAVE_CAT:getCatInfo(r.category,r.type);
+    const cls = r.type==='income'?'amt-in':r.type==='saving'?'amt-sav':'amt-out';
+    const sign = r.type==='income'?'+':'-';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--paper2);border-radius:var(--radius);margin-bottom:6px;">
+      <input type="checkbox" id="chk_${r.id}" value="${r.id}" checked
+        style="width:18px;height:18px;accent-color:var(--ink);flex-shrink:0;cursor:pointer;">
+      <label for="chk_${r.id}" style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer;">
+        <span style="font-size:20px;">${ci.e}</span>
+        <div style="flex:1;">
+          <div style="font-size:13px;font-weight:500;color:var(--ink);">${r.name}</div>
+          <div style="font-size:11px;color:var(--ink3);">每月 ${r.day}號</div>
+        </div>
+        <div class="rec-amt ${cls}" style="font-size:13px;">${sign}${fmt(r.amount)}</div>
+      </label>
     </div>`;
   }).join('');
 }
+
+function applySelected(){
+  const dateEl = document.getElementById('apply-date');
+  const dateStr = dateEl?.value || today();
+  const ym = dateStr.slice(0,7);
+  const recs = recurring[curBookId]||[];
+  const resultEl = document.getElementById('apply-result');
+
+  // 取得勾選的項目
+  const checked = recs.filter(r=>{
+    const chk = document.getElementById('chk_'+r.id);
+    return chk && chk.checked;
+  });
+
+  if(!checked.length){
+    resultEl.innerHTML='<span style="color:var(--amber);">⚠️ 請至少勾選一個項目</span>';
+    return;
+  }
+
+  if(!records[curBookId]) records[curBookId]=[];
+  let added=[], skipped=[];
+
+  checked.forEach(r=>{
+    // 檢查同一個月同名記錄是否已存在
+    const exists = records[curBookId].some(t=>
+      t.note===r.name && t.date && t.date.slice(0,7)===ym && t.amount===r.amount
+    );
+    if(exists){
+      skipped.push(r.name);
+    } else {
+      records[curBookId].push({
+        id: Date.now()+Math.random(),
+        type: r.type,
+        amount: r.amount,
+        category: r.category,
+        pay: r.pay,
+        date: dateStr,
+        note: r.name
+      });
+      added.push(r.name);
+    }
+  });
+
+  if(added.length){
+    records[curBookId].sort((a,b)=>b.date.localeCompare(a.date));
+    saveAll();
+    render();
+  }
+
+  // 顯示結果
+  let msg='';
+  if(added.length) msg+=`<div style="color:var(--green);">✅ 已加入 ${added.length} 筆：${added.join('、')}</div>`;
+  if(skipped.length) msg+=`<div style="color:var(--amber);margin-top:4px;">⚠️ ${skipped.join('、')} 本月已有記錄，略過</div>`;
+  resultEl.innerHTML = msg;
+
+  // 3秒後清除結果提示
+  setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; }, 4000);
+}
+
 function applyRecurring(){
-  applyPendingNow();
-  const btn=document.getElementById('apply-btn');
-  btn.textContent='已套用 ✓';
-  setTimeout(()=>btn.textContent='套用今日到期項目',2000);
+  // 設定頁的「套用」按鈕直接呼叫 applySelected
+  applySelected();
 }
 
 /* ═══════════════ BUDGET SETTINGS ═══════════════ */
@@ -1561,7 +1669,11 @@ function confirmDelBook(){
 /* ═══════════════ SETTINGS MODAL ═══════════════ */
 function openSettings(){
   document.getElementById('settings-modal').style.display='flex';
-  renderRecurring();buildRCatGrid();
+  renderRecurring();
+  buildRCatGrid();
+  // 設定套用日期預設為今天
+  const dateEl = document.getElementById('apply-date');
+  if(dateEl && !dateEl.value) dateEl.value = today();
 }
 function closeSettings(){document.getElementById('settings-modal').style.display='none';}
 function closeSettingsIfBg(e){if(e.target===document.getElementById('settings-modal')) closeSettings();}
@@ -1869,12 +1981,81 @@ function copyScript(){
 
 function setLog(msg){ document.getElementById('sync-log').textContent = msg; }
 
-async function gasPost(payload){
-  const res = await fetch(gasConfig.url, {
-    method: 'POST',
-    body: JSON.stringify(payload),
+// iPhone Safari 不允許 PWA 發 POST 到外部，改用 GET + 參數
+async function gasGet(params){
+  const url = new URL(gasConfig.url);
+  Object.entries(params).forEach(([k,v])=>{
+    url.searchParams.set(k, typeof v === 'string' ? v : JSON.stringify(v));
   });
-  return res.json();
+  const res = await fetch(url.toString(), {method:'GET', mode:'no-cors'});
+  // no-cors 模式下無法讀取回應，改用 JSONP 模式
+  return new Promise((resolve, reject) => {
+    const cbName = 'gas_cb_' + Date.now();
+    const script = document.createElement('script');
+    const cleanUrl = new URL(gasConfig.url);
+    Object.entries(params).forEach(([k,v])=>{
+      cleanUrl.searchParams.set(k, typeof v === 'string' ? v : JSON.stringify(v));
+    });
+    cleanUrl.searchParams.set('callback', cbName);
+    window[cbName] = (data) => {
+      delete window[cbName];
+      document.body.removeChild(script);
+      resolve(data);
+    };
+    script.onerror = () => {
+      delete window[cbName];
+      document.body.removeChild(script);
+      reject(new Error('Script load error'));
+    };
+    script.src = cleanUrl.toString();
+    document.body.appendChild(script);
+    setTimeout(()=>{
+      if(window[cbName]){
+        delete window[cbName];
+        try{ document.body.removeChild(script); }catch(e){}
+        reject(new Error('timeout'));
+      }
+    }, 15000);
+  });
+}
+
+async function gasPost(payload){
+  // 用 iframe + form 方式繞過 CORS，備份不需要讀取回應
+  return new Promise((resolve) => {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = gasConfig.url;
+    form.target = '_gas_iframe_' + Date.now();
+    const iframe = document.createElement('iframe');
+    iframe.name = form.target;
+    iframe.style.display = 'none';
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'payload';
+    input.value = JSON.stringify(payload);
+    // 改用 URL 參數傳遞 action，讓 GAS 的 doGet 也能接
+    const url = new URL(gasConfig.url);
+    url.searchParams.set('action', payload.action);
+    if(payload.data) url.searchParams.set('data', payload.data);
+    if(payload.label) url.searchParams.set('label', payload.label);
+    if(payload.rows) url.searchParams.set('rows', JSON.stringify(payload.rows));
+    form.action = url.toString();
+    form.method = 'GET';
+    form.appendChild(input);
+    document.body.appendChild(iframe);
+    document.body.appendChild(form);
+    iframe.onload = () => {
+      try{ document.body.removeChild(iframe); }catch(e){}
+      try{ document.body.removeChild(form); }catch(e){}
+      resolve({ok: true, msg: '已送出'});
+    };
+    setTimeout(()=>{
+      try{ document.body.removeChild(iframe); }catch(e){}
+      try{ document.body.removeChild(form); }catch(e){}
+      resolve({ok: true, msg: '已送出（timeout）'});
+    }, 8000);
+    form.submit();
+  });
 }
 
 async function syncToSheet(){
@@ -1882,16 +2063,20 @@ async function syncToSheet(){
   setLog('🔄 上傳中...');
   try {
     const data = JSON.stringify({books, records, recurring, monthlyGoals, debts, wishlist, budgetSettings});
-    const r = await gasPost({action:'backup', data});
-    setLog(r.ok ? '✅ '+r.msg : '❌ '+r.msg);
-  } catch(e) { setLog('❌ 連線失敗，請確認腳本網址正確'); }
+    // 資料太大用 POST form submit，GAS 用 doGet 的 URL 參數接收
+    await gasPost({action:'backup', data});
+    setLog('✅ 已送出備份，請至試算表確認');
+  } catch(e) { setLog('❌ 連線失敗：'+e.message); }
 }
 
 async function syncFromSheet(){
   if (!gasConfig.url) { setLog('請先設定連線'); return; }
   setLog('🔄 下載中...');
   try {
-    const r = await gasPost({action:'restore'});
+    // restore 用 GET 讀取
+    const url = gasConfig.url + '?action=restore';
+    const res = await fetch(url);
+    const r = await res.json();
     if (r.ok && r.data) {
       const d = JSON.parse(r.data);
       if (d.books) books = d.books;
@@ -1907,7 +2092,7 @@ async function syncFromSheet(){
       render(); renderBooks(); renderDebts(); renderWishlist();
       setLog('✅ 資料已還原！');
     } else { setLog('❌ '+(r.msg||'無備份資料')); }
-  } catch(e) { setLog('❌ 連線失敗'); }
+  } catch(e) { setLog('❌ 連線失敗，請確認腳本已正確部署'); }
 }
 
 async function exportMonthToSheet(){
@@ -1923,11 +2108,12 @@ async function exportMonthToSheet(){
     category: getCatInfo(r.category, r.type)?.l || r.category,
     note: r.note || '',
     amount: r.amount,
-    pay: r.pay ? (PAY_MAP[r.pay]?.l || r.pay) : ''
+    pay: r.pay ? (PAY_MAP[r.pay]?.l || r.pay) : '',
+    id: r.id
   }));
   try {
-    const res = await gasPost({action:'exportMonth', label, rows});
-    setLog(res.ok ? '✅ '+res.msg : '❌ '+res.msg);
+    await gasPost({action:'exportMonth', label, rows: JSON.stringify(rows)});
+    setLog('✅ 已送出，請至試算表「月份明細」確認');
   } catch(e) { setLog('❌ 連線失敗'); }
 }
 
