@@ -463,6 +463,28 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
       <div id="book-settings" style="display:none;">
         <div class="card">
           <div class="card-title" id="book-settings-title">帳本設定</div>
+
+          <!-- 編輯帳本基本資料 -->
+          <div class="sec-lbl">帳本資料</div>
+          <div class="row2" style="margin-bottom:8px;">
+            <div class="input-block" style="margin:0;"><label>帳本名稱</label><input type="text" id="edit-book-name" placeholder="我的帳本"></div>
+            <div class="input-block" style="margin:0;"><label>emoji</label><input type="text" id="edit-book-emoji" placeholder="📒" maxlength="2" style="font-size:22px;text-align:center;"></div>
+          </div>
+          <div class="input-block" style="margin-bottom:10px;">
+            <label>幣別</label>
+            <select id="edit-book-cur">
+              <option value="NT$">NT$ 台幣</option>
+              <option value="$">$ 美元</option>
+              <option value="¥">¥ 日圓</option>
+              <option value="€">€ 歐元</option>
+              <option value="£">£ 英鎊</option>
+              <option value="HK$">HK$ 港幣</option>
+              <option value="₩">₩ 韓圜</option>
+              <option value="THB">THB 泰銖</option>
+            </select>
+          </div>
+          <button class="btn btn-ink btn-full" style="margin-bottom:16px;" onclick="saveBookEdit()">儲存帳本資料</button>
+          <div id="book-edit-result" style="font-size:12px;color:var(--green);margin-bottom:12px;min-height:16px;"></div>
           <div class="sec-lbl">支出分類</div>
           <div id="exp-cats-display" class="mb12"></div>
           <div style="display:flex;gap:6px;margin-bottom:14px;align-items:center;">
@@ -765,7 +787,7 @@ function loadUserData(){
   wishlist=lsj(p+'bk_wish',[]);
   budgetSettings=lsj(p+'bk_budget',{budget:30000,salary:0});
   if(!books.length){
-    books=[{id:'default',name:'預設帳本',emoji:'📒',currency:'NT$',expCats:[...DEF_EXP],inCats:[...DEF_INC]}];
+    books=[{id:'default',name:'我的帳本',emoji:'📒',currency:'NT$',expCats:[...DEF_EXP],inCats:[...DEF_INC]}];
     saveAll();
   }
 }
@@ -1598,8 +1620,36 @@ function openBookSettings(id){
   document.getElementById('book-settings').style.display='block';
   document.getElementById('book-settings-title').textContent=b.emoji+' '+b.name;
   document.getElementById('book-del-area').innerHTML=`<button class="btn btn-danger btn-full" onclick="showDelConfirm()">刪除此帳本</button>`;
+  // 預填編輯欄位
+  document.getElementById('edit-book-name').value=b.name||'';
+  document.getElementById('edit-book-emoji').value=b.emoji||'📒';
+  const curSel=document.getElementById('edit-book-cur');
+  const curOptions=['NT$','$','¥','€','£','HK$','₩','THB'];
+  curSel.value=curOptions.includes(b.currency)?b.currency:'NT$';
+  document.getElementById('book-edit-result').textContent='';
   renderCustomCats();
   document.getElementById('book-settings').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function saveBookEdit(){
+  const b=books.find(x=>x.id===editBookId);if(!b) return;
+  const name=document.getElementById('edit-book-name').value.trim();
+  const emoji=document.getElementById('edit-book-emoji').value.trim();
+  const currency=document.getElementById('edit-book-cur').value;
+  if(!name){ document.getElementById('book-edit-result').innerHTML='<span style="color:#ef4444;">名稱不能空白</span>'; return; }
+  b.name=name;
+  if(emoji) b.emoji=emoji;
+  b.currency=currency;
+  saveAll();
+  // 更新 header 顯示
+  if(curBookId===editBookId){
+    document.getElementById('hd-title').textContent=b.name;
+    render();
+  }
+  renderBooks();
+  document.getElementById('book-settings-title').textContent=b.emoji+' '+b.name;
+  document.getElementById('book-edit-result').innerHTML='✅ 已儲存';
+  setTimeout(()=>{ document.getElementById('book-edit-result').textContent=''; },2000);
 }
 function renderCustomCats(){
   const b=books.find(x=>x.id===editBookId);if(!b) return;
