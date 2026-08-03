@@ -1,4 +1,4 @@
-const CACHE_NAME = '7kingdom-budget-v4';
+const CACHE_NAME = '7kingdom-budget-v5';
 const ASSETS = [
   './',
   './index.html',
