@@ -334,9 +334,22 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
           <div class="sec-lbl">付款方式</div>
           <div class="pay-grid" id="pay-grid"></div>
         </div>
+        <div id="fx-row" style="display:none;margin-bottom:10px;">
+          <div class="row2">
+            <div class="input-block" style="margin:0;">
+              <label>幣別</label>
+              <select id="rec-cur" onchange="onCurChange()"></select>
+            </div>
+            <div class="input-block" id="fx-rate-wrap" style="margin:0;display:none;">
+              <label>匯率（1 外幣＝？主幣）</label>
+              <input type="number" id="rec-rate" step="any" inputmode="decimal" placeholder="0" oninput="updateFxPreview()">
+            </div>
+          </div>
+        </div>
         <div class="input-block" style="margin-bottom:10px;">
           <label>金額 <span id="cur-sym-lbl" style="font-size:9px;color:var(--ink4);">NT$</span></label>
-          <input class="input-big" type="number" id="amount" placeholder="0" inputmode="decimal">
+          <input class="input-big" type="number" id="amount" placeholder="0" inputmode="decimal" oninput="updateFxPreview()">
+          <div id="fx-preview" style="font-size:12px;color:var(--ink3);margin-top:6px;min-height:0;"></div>
         </div>
         <div class="row2" style="margin-bottom:10px;">
           <div class="input-block" style="margin:0;">
@@ -485,6 +498,15 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
           </div>
           <button class="btn btn-ink btn-full" style="margin-bottom:16px;" onclick="saveBookEdit()">儲存帳本資料</button>
           <div id="book-edit-result" style="font-size:12px;color:var(--green);margin-bottom:12px;min-height:16px;"></div>
+          <div class="sec-lbl">外幣與匯率</div>
+          <div style="font-size:12px;color:var(--ink3);line-height:1.6;margin-bottom:8px;">匯率填「1 單位外幣＝多少主幣別」，例如 1 ¥ = 0.215 NT$。改匯率只影響之後新增的記錄，舊記錄保留當時匯率。</div>
+          <div id="fx-list" style="margin-bottom:8px;"></div>
+          <div class="row2" style="margin-bottom:8px;">
+            <div class="input-block" style="margin:0;"><label>幣別符號/代碼</label><input type="text" id="fx-new-code" placeholder="¥ 或 JPY" maxlength="6"></div>
+            <div class="input-block" style="margin:0;"><label>匯率</label><input type="number" id="fx-new-rate" step="any" inputmode="decimal" placeholder="0.215"></div>
+          </div>
+          <button class="btn btn-ghost btn-full" style="margin-bottom:6px;" onclick="addForeign()">新增外幣</button>
+          <div id="fx-result" style="font-size:12px;min-height:16px;margin-bottom:14px;"></div>
           <div class="sec-lbl">支出分類</div>
           <div id="exp-cats-display" class="mb12"></div>
           <div style="display:flex;gap:6px;margin-bottom:14px;align-items:center;">
@@ -956,7 +978,7 @@ function bootApp(){
   document.getElementById('date').value=today();
   document.getElementById('budget-input').value=budgetSettings.budget||30000;
   document.getElementById('salary-input').value=budgetSettings.salary||0;
-  buildCatGrid();buildPayGrid();buildRCatGrid();
+  buildCatGrid();buildPayGrid();buildRCatGrid();buildCurSelect();
   render();renderBooks();renderDebts();renderWishlist();
   loadGasConfig();
   updateHeaderUser();
@@ -1028,18 +1050,84 @@ function setDebtType(t){
 }
 
 /* ═══════════════ RECORDS ═══════════════ */
+function bookFx(){ return (curBook()&&curBook().fx)||[]; }
+function buildCurSelect(){
+  const fx=bookFx(), row=document.getElementById('fx-row'), sel=document.getElementById('rec-cur');
+  if(!row||!sel) return;
+  if(!fx.length){ row.style.display='none'; sel.innerHTML=''; updateFxPreview(); return; }
+  row.style.display='block';
+  const keep=sel.value;
+  sel.innerHTML=`<option value="">${curSym()}（主幣別）</option>`+fx.map(f=>`<option value="${f.code}">${f.code}</option>`).join('');
+  sel.value=fx.some(f=>f.code===keep)?keep:'';
+  onCurChange();
+}
+function onCurChange(){
+  const code=document.getElementById('rec-cur').value;
+  const f=bookFx().find(x=>x.code===code);
+  document.getElementById('fx-rate-wrap').style.display=f?'block':'none';
+  document.getElementById('rec-rate').value=f?f.rate:'';
+  document.getElementById('cur-sym-lbl').textContent=f?f.code:curSym();
+  updateFxPreview();
+}
+function updateFxPreview(){
+  const el=document.getElementById('fx-preview'); if(!el) return;
+  const code=document.getElementById('rec-cur')?.value;
+  const amt=parseFloat(document.getElementById('amount').value);
+  const rate=parseFloat(document.getElementById('rec-rate')?.value);
+  if(!code||!amt||!rate){ el.textContent=''; return; }
+  el.textContent='≈ '+curSym()+' '+fmt(Math.round(amt*rate*100)/100)+'（'+code+' '+amt+' × '+rate+'）';
+}
+function addForeign(){
+  const b=curBook(); const bk=books.find(x=>x.id===editBookId); if(!bk) return;
+  const code=document.getElementById('fx-new-code').value.trim();
+  const rate=parseFloat(document.getElementById('fx-new-rate').value);
+  const out=document.getElementById('fx-result');
+  if(!code||!rate||rate<=0){ out.innerHTML='<span style="color:#ef4444;">請填幣別與匯率</span>'; return; }
+  if(code===bk.currency){ out.innerHTML='<span style="color:#ef4444;">不能與主幣別相同</span>'; return; }
+  if(!bk.fx) bk.fx=[];
+  const ex=bk.fx.find(f=>f.code===code);
+  if(ex) ex.rate=rate; else bk.fx.push({code,rate});
+  document.getElementById('fx-new-code').value='';document.getElementById('fx-new-rate').value='';
+  out.innerHTML='✅ 已儲存'; saveAll(); renderFxList(); buildCurSelect();
+}
+function updateFxRate(code,v){
+  const bk=books.find(x=>x.id===editBookId); const f=bk&&(bk.fx||[]).find(x=>x.code===code);
+  const r=parseFloat(v); if(!f||!r||r<=0) return;
+  f.rate=r; saveAll(); buildCurSelect();
+}
+function delForeign(code){
+  const bk=books.find(x=>x.id===editBookId); if(!bk) return;
+  bk.fx=(bk.fx||[]).filter(f=>f.code!==code); saveAll(); renderFxList(); buildCurSelect();
+}
+function renderFxList(){
+  const bk=books.find(x=>x.id===editBookId); const el=document.getElementById('fx-list'); if(!bk||!el) return;
+  el.innerHTML=(bk.fx||[]).map(f=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+    <div style="min-width:56px;font-weight:600;">${f.code}</div>
+    <div style="font-size:12px;color:var(--ink3);">1 = ${bk.currency}</div>
+    <input type="number" step="any" value="${f.rate}" style="flex:1;" onchange="updateFxRate('${f.code}',this.value)">
+    <button class="btn btn-ghost btn-sm" onclick="delForeign('${f.code}')">刪除</button></div>`).join('')||'<div style="font-size:12px;color:var(--ink4);">尚未新增外幣</div>';
+}
 function clearForm(){
   document.getElementById('amount').value='';
+  document.getElementById('fx-preview').textContent='';
   document.getElementById('note').value='';
   document.getElementById('date').value=today();
 }
 function addRecord(){
-  const amount=parseFloat(document.getElementById('amount').value);
+  let amount=parseFloat(document.getElementById('amount').value);
+  const fxCode=document.getElementById('rec-cur')?.value||'';
+  const fxRate=parseFloat(document.getElementById('rec-rate')?.value);
+  const fxInfo={};
+  if(fxCode&&amount>0){
+    if(!fxRate||fxRate<=0) return;
+    fxInfo.origCur=fxCode;fxInfo.origAmount=amount;fxInfo.rate=fxRate;
+    amount=Math.round(amount*fxRate*100)/100;
+  }
   const note=document.getElementById('note').value.trim();
   const date=document.getElementById('date').value||today();
   if(!amount||amount<=0) return;
   if(!records[curBookId]) records[curBookId]=[];
-  records[curBookId].push({id:Date.now(),type:curType,amount,category:curCat,pay:curType==='expense'?curPay:null,date,note});
+  records[curBookId].push({id:Date.now(),type:curType,amount,category:curCat,pay:curType==='expense'?curPay:null,date,note,...fxInfo});
   records[curBookId].sort((a,b)=>b.date.localeCompare(a.date));
   saveAll();clearForm();render();
   document.querySelector('.scroll').scrollTo({top:0,behavior:'smooth'});
@@ -1066,7 +1154,7 @@ function render(){
     <div class="metric-cell"><div class="metric-label">本月收入</div><div class="metric-value cv-i">${fmt(inc)}</div></div>
     <div class="metric-cell"><div class="metric-label">本月支出</div><div class="metric-value cv-e">${fmt(exp)}</div></div>
     <div class="metric-cell"><div class="metric-label">本月存錢</div><div class="metric-value cv-s">${fmt(sav)}</div></div>`;
-  document.getElementById('cur-sym-lbl').textContent=curSym();
+  if(!document.getElementById('rec-cur')?.value) document.getElementById('cur-sym-lbl').textContent=curSym();
   const months=['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
   document.getElementById('month-lbl').textContent=`${viewYear}年 ${months[viewMonth]}`;
   renderPending();
@@ -1078,11 +1166,12 @@ function render(){
     const sign=r.type==='income'?'+':'-';
     const cls=r.type==='income'?'amt-in':r.type==='saving'?'amt-sav':'amt-out';
     const dispAmt=r.type==='saving'?'🐷 '+fmt(r.amount):sign+fmt(r.amount);
+    const fxTxt=r.origCur?`${r.origCur} ${fmt(r.origAmount)}（≈ ${curSym()}${fmt(r.amount)}）`:'';
     return `<div class="rec-item">
       <div class="rec-ico" style="background:${ci.c}18;">${ci.e}</div>
       <div class="rec-body">
         <div class="rec-name">${r.note||ci.l}</div>
-        <div class="rec-meta">${ci.l}${pi?' · '+pi.e+' '+pi.l:''} · ${r.date}</div>
+        <div class="rec-meta">${ci.l}${pi?' · '+pi.e+' '+pi.l:''} · ${r.date}${fxTxt?' · '+fxTxt:''}</div>
       </div>
       <div class="rec-right">
         <div class="rec-amt ${cls}">${dispAmt}</div>
@@ -1598,7 +1687,7 @@ function renderBooks(){
     </div>`).join('');
 }
 function selectBook(id){
-  curBookId=id;renderBooks();buildCatGrid();buildPayGrid();buildRCatGrid();render();
+  curBookId=id;renderBooks();buildCatGrid();buildPayGrid();buildRCatGrid();buildCurSelect();render();
   document.getElementById('hd-title').textContent=books.find(b=>b.id===id)?.name||'77 記帳';
 }
 function toggleCustomCur(){
@@ -1627,7 +1716,7 @@ function openBookSettings(id){
   const curOptions=['NT$','$','¥','€','£','HK$','₩','THB'];
   curSel.value=curOptions.includes(b.currency)?b.currency:'NT$';
   document.getElementById('book-edit-result').textContent='';
-  renderCustomCats();
+  renderCustomCats();renderFxList();
   document.getElementById('book-settings').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -1644,7 +1733,7 @@ function saveBookEdit(){
   // 更新 header 顯示
   if(curBookId===editBookId){
     document.getElementById('hd-title').textContent=b.name;
-    render();
+    buildCurSelect();render();
   }
   renderBooks();
   document.getElementById('book-settings-title').textContent=b.emoji+' '+b.name;
@@ -2138,7 +2227,7 @@ async function syncFromSheet(){
       if (d.budgetSettings) budgetSettings = d.budgetSettings;
       saveAll();
       curBookId = books[0]?.id || 'default';
-      buildCatGrid(); buildPayGrid(); buildRCatGrid();
+      buildCatGrid(); buildPayGrid(); buildRCatGrid(); buildCurSelect();
       render(); renderBooks(); renderDebts(); renderWishlist();
       setLog('✅ 資料已還原！');
     } else { setLog('❌ '+(r.msg||'無備份資料')); }
@@ -2159,7 +2248,11 @@ async function exportMonthToSheet(){
     note: r.note || '',
     amount: r.amount,
     pay: r.pay ? (PAY_MAP[r.pay]?.l || r.pay) : '',
-    id: r.id
+    id: r.id,
+    bookName: curBook()?.name || '',
+    origCur: r.origCur || '',
+    origAmount: r.origAmount || '',
+    rate: r.rate || ''
   }));
   try {
     await gasPost({action:'exportMonth', label, rows: JSON.stringify(rows)});
