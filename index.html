@@ -798,6 +798,7 @@ function saveAll(){
   ls(p+'bk_books',books);ls(p+'bk_records',records);ls(p+'bk_recurring',recurring);
   ls(p+'bk_goals',monthlyGoals);ls(p+'bk_debts',debts);ls(p+'bk_wish',wishlist);
   ls(p+'bk_budget',budgetSettings);
+  try{ scheduleAutoBackup(); }catch(e){}
 }
 function loadUserData(){
   const p=userKey('');
@@ -1825,197 +1826,191 @@ function switchStab(s){
 }
 
 /* ═══════════════ APPS SCRIPT 同步 ═══════════════ */
-const GAS_SCRIPT = `// 7王國記帳 — Google Apps Script 同步腳本 v2
-// 重新部署後記得複製新的網址
+const GAS_SCRIPT = `// 7王國記帳 — Google Apps Script 同步腳本 v7
 
-const SHEET_RAW    = '原始備份';   // JSON 備份（供還原用）
-const SHEET_ALL    = '所有記錄';   // 全部明細表格
-const SHEET_MONTH  = '月份明細';   // 每次匯出本月的記錄
-const SHEET_STATS  = '統計摘要';   // 每月收支摘要
+const SHEET_RAW   = '原始備份';
+const SHEET_ALL   = '所有記錄';
+const SHEET_MONTH = '月份明細';
+const SHEET_STATS = '統計摘要';
 
-// ── 欄位標題 ──
-const HEADERS = ['帳本','日期','年','月','類型','分類','說明','金額','付款方式','記錄ID'];
+const ALL_HEADERS   = ['帳本','日期','年','月','類型','分類','說明','金額','付款方式','記錄ID','原幣別','原始金額','匯率'];
+const MONTH_HEADERS = ['月份','帳本','日期','年','月','類型','分類','說明','金額','付款方式','記錄ID','原幣別','原始金額','匯率'];
+
+function doGet(e) {
+  const action = (e && e.parameter && e.parameter.action) || '';
+  if (action === 'restore') {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const raw = ss.getSheetByName(SHEET_RAW);
+    if (!raw || raw.getLastRow() < 2) return jsonOut({ok:false, msg:'找不到備份，請先上傳'});
+    return jsonOut({ok:true, data: raw.getRange(2,1).getValue()});
+  }
+  if (action === 'backup' || action === 'exportMonth') {
+    return handle({action:action, data:e.parameter.data, label:e.parameter.label, rows:e.parameter.rows});
+  }
+  return jsonOut({ok:true, msg:'7王國記帳腳本 v7 運作正常'});
+}
 
 function doPost(e) {
   try {
-    const params = JSON.parse(e.postData.contents);
+    let p;
+    if (e && e.parameter && e.parameter.payload) p = JSON.parse(e.parameter.payload);
+    else p = JSON.parse(e.postData.contents);
+    return handle(p);
+  } catch(err) {
+    return jsonOut({ok:false, msg:err.toString()});
+  }
+}
+
+function handle(p) {
+  try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-    switch (params.action) {
+    switch(p.action) {
 
       case 'backup': {
-        // 1. 原始 JSON 備份（供還原）
-        let rawSheet = getOrCreateSheet(ss, SHEET_RAW);
-        rawSheet.clearContents();
-        rawSheet.getRange(1,1).setValue('備份時間：' + new Date().toLocaleString('zh-TW'));
-        rawSheet.getRange(2,1).setValue(params.data);
+        const d = JSON.parse(p.data);
 
-        // 2. 解析 JSON，寫入「所有記錄」工作表
-        const d = JSON.parse(params.data);
-        writeAllRecords(ss, d);
+        // 1. 原始備份（供還原）
+        const raw = getOrCreate(ss, SHEET_RAW);
+        raw.clearContents();
+        raw.getRange(1,1).setValue('備份時間：' + new Date().toLocaleString('zh-TW'));
+        raw.getRange(2,1).setValue(p.data);
 
-        // 3. 寫入「統計摘要」
+        // 2. 所有記錄
+        const rows = buildRows(d);
+        const allSheet = getOrCreate(ss, SHEET_ALL);
+        allSheet.clearContents();
+        writeSheet(allSheet, ALL_HEADERS, rows.sort((a,b)=>b[1].localeCompare(a[1])));
+
+        // 3. 月份明細（加月份欄，可篩選）
+        const monthRows = rows.map(r => {
+          const ym = r[1] ? r[1].slice(0,7) : '';
+          const yr = ym.slice(0,4);
+          const mo = parseInt(ym.slice(5,7)||'0');
+          return [mo ? yr+'年'+mo+'月' : '', ...r];
+        }).sort((a,b)=>b[2].localeCompare(a[2]));
+        const monthSheet = getOrCreate(ss, SHEET_MONTH);
+        monthSheet.clearContents();
+        writeSheet(monthSheet, MONTH_HEADERS, monthRows);
+
+        // 4. 統計摘要
         writeStats(ss, d);
 
-        return ok('備份成功，已更新所有記錄與統計摘要');
+        return jsonOut({ok:true, msg:'備份成功！共 '+rows.length+' 筆記錄'});
       }
 
       case 'exportMonth': {
-        // 寫入「月份明細」工作表
-        let sheet = getOrCreateSheet(ss, SHEET_MONTH);
-        ensureHeaders(sheet, ['月份', ...HEADERS.slice(1)]);
-        const rows = params.rows.map(r => [
-          params.label,
-          r.date,
-          r.date.slice(0,4),
-          r.date.slice(5,7),
-          r.type === 'income' ? '收入' : r.type === 'saving' ? '存錢' : '支出',
-          r.category,
-          r.note || '',
-          r.amount,
-          r.pay || '',
-          r.id || ''
+        // 追加本月明細到「月份明細」（不清空，僅補充）
+        const label = p.label || '';
+        const rows = typeof p.rows === 'string' ? JSON.parse(p.rows) : (p.rows||[]);
+        const sheet = getOrCreate(ss, SHEET_MONTH);
+        if(sheet.getLastRow() === 0) {
+          writeSheet(sheet, MONTH_HEADERS, []);
+        }
+        const writeRows = rows.map(r => [
+          label, r.bookName||'', r.date||'',
+          r.date?r.date.slice(0,4):'', r.date?r.date.slice(5,7):'',
+          r.type==='income'?'收入':r.type==='saving'?'存錢':'支出',
+          r.category||'', r.note||'', r.amount||0, r.pay||'', r.id||'',
+          r.origCur||'', r.origAmount||'', r.rate||''
         ]);
-        if (rows.length > 0) {
-          const start = sheet.getLastRow() + 1;
-          sheet.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
+        if(writeRows.length > 0) {
+          sheet.getRange(sheet.getLastRow()+1, 1, writeRows.length, MONTH_HEADERS.length).setValues(writeRows);
           autoFormat(sheet);
         }
-        return ok('匯出 ' + rows.length + ' 筆到月份明細');
+        return jsonOut({ok:true, msg:'匯出 '+writeRows.length+' 筆到月份明細'});
       }
 
       case 'restore': {
-        const rawSheet = ss.getSheetByName(SHEET_RAW);
-        if (!rawSheet || rawSheet.getLastRow() < 2) {
-          return fail('找不到備份資料，請先執行上傳');
-        }
-        const data = rawSheet.getRange(2, 1).getValue();
-        return ContentService
-          .createTextOutput(JSON.stringify({ok: true, data: data}))
-          .setMimeType(ContentService.MimeType.JSON);
+        const raw = ss.getSheetByName(SHEET_RAW);
+        if(!raw || raw.getLastRow()<2) return jsonOut({ok:false, msg:'找不到備份'});
+        return jsonOut({ok:true, data: raw.getRange(2,1).getValue()});
       }
 
       default:
-        return fail('未知指令：' + params.action);
+        return jsonOut({ok:false, msg:'未知指令：'+p.action});
     }
   } catch(err) {
-    return fail(err.toString());
+    return jsonOut({ok:false, msg:err.toString()});
   }
 }
 
-function doGet(e) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ok: true, msg: '7王國記帳腳本運作正常 v2'}))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-// ── 寫入所有記錄 ──
-function writeAllRecords(ss, data) {
-  let sheet = getOrCreateSheet(ss, SHEET_ALL);
-  sheet.clearContents();
-  ensureHeaders(sheet, HEADERS);
-
-  const TYPE_MAP = {income:'收入', saving:'存錢', expense:'支出'};
+// ── 建立記錄 rows ──
+function buildRows(data) {
+  const TYPE = {income:'收入', saving:'存錢', expense:'支出'};
+  const PAY  = {linepay:'Line Pay', applepay:'Apple Pay', credit:'信用卡', cash:'現金', transfer:'轉帳'};
   const rows = [];
-
-  (data.books || []).forEach(book => {
-    const recs = (data.records || {})[book.id] || [];
-    // 建立分類 map
+  (data.books||[]).forEach(book => {
+    const recs = (data.records||{})[book.id]||[];
     const catMap = {};
-    (book.expCats || []).forEach(c => catMap[c.k] = c.l);
-    (book.inCats  || []).forEach(c => catMap[c.k] = c.l);
-    catMap['saving'] = '存錢';
-
-    // 付款方式 map
-    const payMap = {linepay:'Line Pay', applepay:'Apple Pay', credit:'信用卡', cash:'現金', transfer:'轉帳'};
-
+    (book.expCats||[]).forEach(c=>catMap[c.k]=c.l);
+    (book.inCats||[]).forEach(c=>catMap[c.k]=c.l);
+    catMap['saving']='存錢';
     recs.forEach(r => {
       rows.push([
         book.name,
-        r.date,
-        r.date ? r.date.slice(0,4) : '',
-        r.date ? r.date.slice(5,7) : '',
-        TYPE_MAP[r.type] || r.type,
-        catMap[r.category] || r.category || '',
-        r.note || '',
-        r.amount,
-        payMap[r.pay] || r.pay || '',
-        r.id || ''
+        r.date||'',
+        r.date?r.date.slice(0,4):'',
+        r.date?r.date.slice(5,7):'',
+        TYPE[r.type]||r.type,
+        catMap[r.category]||r.category||'',
+        r.note||'',
+        r.amount||0,
+        PAY[r.pay]||r.pay||'',
+        r.id||'',
+        r.origCur||'', r.origAmount||'', r.rate||''
       ]);
     });
   });
-
-  // 依日期排序（新到舊）
-  rows.sort((a, b) => (b[1] || '').localeCompare(a[1] || ''));
-
-  if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, HEADERS.length).setValues(rows);
-    autoFormat(sheet);
-  }
+  return rows;
 }
 
-// ── 寫入統計摘要 ──
+// ── 統計摘要 ──
 function writeStats(ss, data) {
-  let sheet = getOrCreateSheet(ss, SHEET_STATS);
+  const sheet = getOrCreate(ss, SHEET_STATS);
   sheet.clearContents();
-
-  const statsHeaders = ['帳本','年月','收入','支出','存錢','淨收益'];
-  sheet.getRange(1, 1, 1, statsHeaders.length).setValues([statsHeaders]);
-  sheet.getRange(1, 1, 1, statsHeaders.length).setFontWeight('bold');
-
+  const headers = ['帳本','年月','年','月','收入','支出','存錢','淨收益','筆數'];
+  writeSheet(sheet, headers, []);
   const rows = [];
-  (data.books || []).forEach(book => {
-    const recs = (data.records || {})[book.id] || [];
-    const monthly = {};
+  (data.books||[]).forEach(book => {
+    const recs = (data.records||{})[book.id]||[];
+    const m = {};
     recs.forEach(r => {
-      if (!r.date) return;
-      const ym = r.date.slice(0, 7);
-      if (!monthly[ym]) monthly[ym] = {inc:0, exp:0, sav:0};
-      if (r.type === 'income')  monthly[ym].inc += r.amount;
-      if (r.type === 'expense') monthly[ym].exp += r.amount;
-      if (r.type === 'saving')  monthly[ym].sav += r.amount;
+      if(!r.date) return;
+      const ym = r.date.slice(0,7);
+      if(!m[ym]) m[ym]={inc:0,exp:0,sav:0,n:0};
+      if(r.type==='income')  m[ym].inc+=r.amount;
+      if(r.type==='expense') m[ym].exp+=r.amount;
+      if(r.type==='saving')  m[ym].sav+=r.amount;
+      m[ym].n++;
     });
-    Object.keys(monthly).sort().reverse().forEach(ym => {
-      const m = monthly[ym];
-      rows.push([book.name, ym, m.inc, m.exp, m.sav, m.inc - m.exp]);
+    Object.keys(m).sort().reverse().forEach(ym=>{
+      const v=m[ym];
+      rows.push([book.name, ym, ym.slice(0,4), parseInt(ym.slice(5,7)), v.inc, v.exp, v.sav, v.inc-v.exp, v.n]);
     });
   });
-
-  if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, statsHeaders.length).setValues(rows);
+  if(rows.length>0) {
+    sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
+    sheet.getRange(2,5,rows.length,4).setNumberFormat('#,##0');
   }
   autoFormat(sheet);
 }
 
 // ── 工具函數 ──
-function getOrCreateSheet(ss, name) {
+function getOrCreate(ss, name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
-
-function ensureHeaders(sheet, headers) {
-  if (sheet.getLastRow() === 0) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
-    sheet.setFrozenRows(1);
-  }
+function writeSheet(sheet, headers, rows) {
+  sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  if(rows.length>0) sheet.getRange(2,1,rows.length,headers.length).setValues(rows);
+  autoFormat(sheet);
 }
-
 function autoFormat(sheet) {
-  try {
-    sheet.autoResizeColumns(1, sheet.getLastColumn());
-  } catch(e) {}
+  try { sheet.autoResizeColumns(1, sheet.getLastColumn()); } catch(e) {}
 }
-
-function ok(msg) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ok: true, msg: msg}))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function fail(msg) {
-  return ContentService
-    .createTextOutput(JSON.stringify({ok: false, msg: msg}))
-    .setMimeType(ContentService.MimeType.JSON);
+function jsonOut(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 `;
 
@@ -2159,42 +2154,49 @@ async function gasGet(params){
 }
 
 async function gasPost(payload){
-  // 用 iframe + form 方式繞過 CORS，備份不需要讀取回應
+  // 用隱藏表單 POST（不受網址長度限制），回應不需讀取
   return new Promise((resolve) => {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = gasConfig.url;
-    form.target = '_gas_iframe_' + Date.now();
+    const name = '_gas_iframe_' + Date.now();
     const iframe = document.createElement('iframe');
-    iframe.name = form.target;
-    iframe.style.display = 'none';
+    iframe.name = name; iframe.style.display = 'none';
+    const form = document.createElement('form');
+    form.method = 'POST'; form.action = gasConfig.url; form.target = name;
     const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = 'payload';
-    input.value = JSON.stringify(payload);
-    // 改用 URL 參數傳遞 action，讓 GAS 的 doGet 也能接
-    const url = new URL(gasConfig.url);
-    url.searchParams.set('action', payload.action);
-    if(payload.data) url.searchParams.set('data', payload.data);
-    if(payload.label) url.searchParams.set('label', payload.label);
-    if(payload.rows) url.searchParams.set('rows', JSON.stringify(payload.rows));
-    form.action = url.toString();
-    form.method = 'GET';
+    input.type = 'hidden'; input.name = 'payload'; input.value = JSON.stringify(payload);
     form.appendChild(input);
-    document.body.appendChild(iframe);
-    document.body.appendChild(form);
-    iframe.onload = () => {
+    document.body.appendChild(iframe); document.body.appendChild(form);
+    let done = false;
+    const finish = (msg) => {
+      if (done) return; done = true;
       try{ document.body.removeChild(iframe); }catch(e){}
       try{ document.body.removeChild(form); }catch(e){}
-      resolve({ok: true, msg: '已送出'});
+      resolve({ok: true, msg});
     };
-    setTimeout(()=>{
-      try{ document.body.removeChild(iframe); }catch(e){}
-      try{ document.body.removeChild(form); }catch(e){}
-      resolve({ok: true, msg: '已送出（timeout）'});
-    }, 8000);
+    iframe.onload = () => finish('已送出');
+    setTimeout(()=>finish('已送出（timeout）'), 15000);
     form.submit();
   });
+}
+
+/* ═══════════════ 自動備份 ═══════════════ */
+let _abTimer=null;
+function scheduleAutoBackup(){
+  if(!gasConfig||!gasConfig.url) return;
+  clearTimeout(_abTimer);
+  _abTimer=setTimeout(runAutoBackup,4000);
+}
+async function runAutoBackup(){
+  if(!gasConfig||!gasConfig.url) return;
+  const total=Object.values(records||{}).reduce((n,a)=>n+(a?a.length:0),0);
+  if(total===0) return; // 空資料不備份，避免蓋掉試算表裡的舊備份
+  try{
+    const data=JSON.stringify({books,records,recurring,monthlyGoals,debts,wishlist,budgetSettings});
+    await gasPost({action:'backup',data});
+    const t=new Date();
+    const txt='✅ 自動備份 '+(t.getMonth()+1)+'/'+t.getDate()+' '+String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0');
+    try{ localStorage.setItem(userKey('')+'bk_lastbackup',txt); }catch(e){}
+    const el=document.getElementById('sync-log'); if(el) el.textContent=txt;
+  }catch(e){}
 }
 
 async function syncToSheet(){
