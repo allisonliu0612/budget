@@ -310,7 +310,7 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
-      <button class="hdr-btn" id="hd-user-btn" onclick="switchUser()" title="切換使用者" style="font-size:20px;">👤</button>
+      <button class="hdr-btn" id="hd-user-btn" style="font-size:20px;cursor:default;">👤</button>
       <span id="sync-indicator" class="offline-badge">本機</span>
       <button class="hdr-btn" id="settings-btn" onclick="openSettings()">⚙️</button>
     </div>
@@ -578,9 +578,9 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
           <div id="pg-user-avatar" style="font-size:44px;line-height:1;">👤</div>
           <div style="flex:1;">
             <div id="pg-user-name" style="font-size:17px;font-weight:600;color:var(--ink);">未登入</div>
-            <div style="font-size:12px;color:var(--ink3);margin-top:2px;">各使用者資料完全獨立</div>
+            <div style="font-size:12px;color:var(--ink3);margin-top:2px;">你的專屬記帳本</div>
           </div>
-          <button class="btn btn-ghost btn-sm" onclick="switchUser()">切換</button>
+          
         </div>
       </div>
       <div class="card" id="user-status-card">
@@ -958,28 +958,25 @@ function init(){
   // 載入使用者清單
   users = lsj('bk_users', []);
 
-  // 若沒有任何使用者，預設建立兩個
-  if(!users.length){
-    users = [
-      {id:'user_77',   name:'77',   avatar:'👸'},
-      {id:'user_paul', name:'Paul', avatar:'⚔️'},
-    ];
-    ls('bk_users', users);
+  // 單人模式：只使用「77」。沿用原本的 77 使用者 ID，資料不會遺失
+  const found77 = users.find(u=>u.name==='77') || users.find(u=>u.id==='user_77');
+  let me = found77 || users[0];
+  if(!me) me = {id:'user_77', name:'77', avatar:'👸'};
+  // 找到 77 時，清除其他使用者（例如 Paul）留在本機的資料
+  if(found77){
+    try{
+      const keep = 'u_' + me.id + '_';
+      Object.keys(localStorage).forEach(k=>{
+        if(k.startsWith('u_') && !k.startsWith(keep)) localStorage.removeItem(k);
+      });
+    }catch(e){}
   }
-
-  // 檢查上次使用者
-  const lastUser = ls('last_user');
-  if(lastUser && users.find(u=>u.id===lastUser)){
-    // 直接進入上次的使用者
-    selectedUserId = lastUser;
-    curUserId = lastUser;
-    bootApp();
-  } else {
-    // 顯示選擇畫面
-    document.getElementById('loading-screen').style.display='none';
-    document.getElementById('user-select-screen').style.display='flex';
-    renderUserSelectScreen();
-  }
+  users = [me];
+  ls('bk_users', users);
+  selectedUserId = me.id;
+  curUserId = me.id;
+  ls('last_user', me.id);
+  bootApp();
 }
 
 function bootApp(){
